@@ -1,7 +1,7 @@
 {
   "name": "claw-voice-server",
   "version": "1.0.0",
-  "description": "Voice server for Claw Fleet Manager - Twilio + OpenAI Realtime",
+  "description": "Voice server for Claw Fleet Manager - Twilio + OpenAI Realtime + OpenClaw",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -12,7 +12,8 @@
     "express": "^4.21.0",
     "ws": "^8.18.0",
     "twilio": "^5.4.0",
-    "dotenv": "^16.4.0"
+    "dotenv": "^16.4.0",
+    "openai": "^4.80.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

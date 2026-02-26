@@ -116,3 +116,72 @@ export function convertOpenAIToTwilio(base64Pcm: string): string {
   const mulawBuffer = pcm24kToMulaw(pcmBuffer);
   return mulawBuffer.toString('base64');
 }
+
+/**
+ * Convert PCM audio to WAV format for Whisper API
+ * @param pcmData - Raw PCM samples (Int16)
+ * @param sampleRate - Sample rate (default 8000 for Twilio)
+ * @param channels - Number of channels (default 1 for mono)
+ * @returns WAV file as Buffer
+ */
+export function pcmToWav(pcmData: Buffer, sampleRate = 8000, channels = 1): Buffer {
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const dataSize = pcmData.length;
+  const headerSize = 44;
+
+  const wav = Buffer.alloc(headerSize + dataSize);
+
+  // RIFF header
+  wav.write('RIFF', 0);
+  wav.writeUInt32LE(36 + dataSize, 4); // File size - 8
+  wav.write('WAVE', 8);
+
+  // fmt chunk
+  wav.write('fmt ', 12);
+  wav.writeUInt32LE(16, 16); // Chunk size
+  wav.writeUInt16LE(1, 20); // Audio format (PCM)
+  wav.writeUInt16LE(channels, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(byteRate, 28);
+  wav.writeUInt16LE(blockAlign, 32);
+  wav.writeUInt16LE(bitsPerSample, 34);
+
+  // data chunk
+  wav.write('data', 36);
+  wav.writeUInt32LE(dataSize, 40);
+  pcmData.copy(wav, 44);
+
+  return wav;
+}
+
+/**
+ * Convert mulaw to PCM without upsampling (stays at 8kHz)
+ * Used for Whisper transcription
+ */
+export function mulawToPcm8k(mulawData: Buffer): Buffer {
+  const pcm = new Int16Array(mulawData.length);
+
+  for (let i = 0; i < mulawData.length; i++) {
+    pcm[i] = MULAW_TO_LINEAR[mulawData[i]];
+  }
+
+  return Buffer.from(pcm.buffer);
+}
+
+/**
+ * Convert PCM 24kHz to 8kHz for Whisper
+ * Downsamples 3x by taking every 3rd sample
+ */
+export function pcm24kTo8k(pcmData: Buffer): Buffer {
+  const pcm24k = new Int16Array(pcmData.buffer, pcmData.byteOffset, pcmData.length / 2);
+  const outputLength = Math.floor(pcm24k.length / 3);
+  const pcm8k = new Int16Array(outputLength);
+
+  for (let i = 0; i < outputLength; i++) {
+    pcm8k[i] = pcm24k[i * 3];
+  }
+
+  return Buffer.from(pcm8k.buffer);
+}

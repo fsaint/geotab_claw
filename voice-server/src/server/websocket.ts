@@ -1,7 +1,9 @@
 import { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'url';
+import { config } from '../config';
 import { handleTwilioStream } from '../realtime/bridge';
+import { handleOpenClawStream } from '../openclaw/bridge';
 import { findDriverByName, findDriverByPhone, Driver } from '../contacts/drivers';
 import { PersonaType } from '../agent/personas';
 
@@ -36,8 +38,14 @@ export function setupWebSocketServer(httpServer: HttpServer): WebSocketServer {
       personaType = 'boss'; // Default to boss persona for unknown callers
     }
 
-    // Set up the Twilio <-> OpenAI bridge
-    handleTwilioStream(ws, callSid, from, personaType, driver);
+    // Route to appropriate backend based on feature flag
+    if (config.useOpenClaw) {
+      console.log(`[WebSocket] Using OpenClaw backend`);
+      handleOpenClawStream(ws, callSid, from, personaType, driver);
+    } else {
+      console.log(`[WebSocket] Using OpenAI Realtime backend`);
+      handleTwilioStream(ws, callSid, from, personaType, driver);
+    }
   });
 
   wss.on('error', (err) => {

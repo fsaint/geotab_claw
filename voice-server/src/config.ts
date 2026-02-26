@@ -12,6 +12,9 @@ export const config = {
   // Demo mode uses mock Geotab data instead of real API
   demoMode: process.env.DEMO_MODE === 'true' || !process.env.GEOTAB_DATABASE,
 
+  // Feature flag: use OpenClaw instead of OpenAI Realtime
+  useOpenClaw: process.env.USE_OPENCLAW === 'true',
+
   twilio: {
     accountSid: process.env.TWILIO_ACCOUNT_SID || '',
     authToken: process.env.TWILIO_AUTH_TOKEN || '',
@@ -23,6 +26,24 @@ export const config = {
     realtimeUrl: 'wss://api.openai.com/v1/realtime',
     model: 'gpt-4o-realtime-preview-2024-12-17',
     voice: 'alloy' as const,
+  },
+
+  // OpenClaw Gateway configuration
+  openclaw: {
+    gatewayUrl: process.env.OPENCLAW_GATEWAY_URL || 'ws://localhost:18789',
+    gatewayToken: process.env.OPENCLAW_GATEWAY_TOKEN || '',
+  },
+
+  // TTS configuration
+  tts: {
+    provider: (process.env.TTS_PROVIDER || 'openai') as 'openai' | 'elevenlabs',
+    voice: process.env.TTS_VOICE || 'alloy',
+    // ElevenLabs settings
+    elevenlabs: {
+      apiKey: process.env.ELEVENLABS_API_KEY || '',
+      voiceId: process.env.ELEVENLABS_VOICE_ID || '',
+      modelId: process.env.ELEVENLABS_MODEL_ID || 'eleven_turbo_v2_5',
+    },
   },
 
   geotab: {
