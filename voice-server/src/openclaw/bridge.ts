@@ -4,7 +4,7 @@
  * Bridges Twilio Media Streams with OpenClaw Gateway using:
  * - VAD for speech detection
  * - Whisper for STT
- * - OpenClaw Gateway for LLM (Claude + Geotab MCP)
+ * - OpenClaw Gateway for LLM (Claude + Geotab MCP via nodes)
  * - TTS for speech synthesis
  *
  * State Machine:
@@ -23,20 +23,15 @@ import { VoiceActivityDetector } from '../stt/vad';
 import { transcribe, AudioBuffer } from '../stt/whisper';
 import {
   createOpenClawSession,
-  getOpenClawSession,
   closeOpenClawSession,
   sendTranscription,
-  sendToolResult,
   triggerGreeting,
+  interruptResponse,
   OpenClawSession,
 } from './session';
 import { orchestrator } from '../agent/orchestrator';
-import { contextStore } from '../agent/context';
-import { getVehicleStatus, getFleetOverview } from '../fleet/geotab-client';
-import { findDriverByName, findDriverByVehicle, bossPhone, Driver } from '../contacts/drivers';
 import { PersonaType } from '../agent/personas';
-import { initiateOutboundCall } from '../routes/outbound';
-import { config } from '../config';
+import { Driver } from '../contacts/drivers';
 import { TTSProvider, TTSChunk, createTTSWithFallback } from '../tts';
 
 type BridgeState = 'idle' | 'listening' | 'processing' | 'speaking' | 'interrupted';
@@ -68,7 +63,6 @@ interface OpenClawBridgeSession {
   tts: TTSProvider;
   isSpeaking: boolean;
   pendingTTSText: string;
-  speakingChunks: Buffer[];
 }
 
 const bridgeSessions = new Map<string, OpenClawBridgeSession>();
@@ -104,7 +98,6 @@ export async function handleOpenClawStream(
     tts,
     isSpeaking: false,
     pendingTTSText: '',
-    speakingChunks: [],
   };
 
   bridgeSessions.set(callSid, bridge);
@@ -115,24 +108,27 @@ export async function handleOpenClawStream(
     bridge.openclawSession = session;
 
     // Set up OpenClaw event handlers
-    session.onMessageDelta = (delta: string) => {
-      handleAssistantDelta(bridge, delta);
+    session.onTextDelta = (text: string) => {
+      handleTextDelta(bridge, text);
     };
 
-    session.onMessageComplete = (content: string) => {
-      handleAssistantComplete(bridge, content);
+    session.onTextComplete = (text: string) => {
+      handleTextComplete(bridge, text);
     };
 
-    session.onToolCall = (toolCallId: string, name: string, args: Record<string, unknown>) => {
-      handleToolCall(bridge, toolCallId, name, args);
+    session.onToolCall = (toolId: string, name: string, input: Record<string, unknown>) => {
+      // Tools are handled by OpenClaw's MCP nodes (Geotab MCP server)
+      // We just log them here for visibility
+      console.log(`[OpenClawBridge] Tool call (handled by MCP): ${name}`, input);
     };
 
     session.onError = (error) => {
       console.error(`[OpenClawBridge] OpenClaw error:`, error);
     };
+
   } catch (err) {
     console.error(`[OpenClawBridge] Failed to create OpenClaw session:`, err);
-    // Could fall back to OpenAI Realtime here
+    // Session creation failed - call will work but without AI
   }
 
   // Handle Twilio messages
@@ -208,8 +204,12 @@ function handleAudioInput(bridge: OpenClawBridgeSession, base64Audio: string): v
     // If we're speaking, interrupt
     if (bridge.state === 'speaking') {
       bridge.state = 'interrupted';
-      bridge.speakingChunks = [];
+      bridge.isSpeaking = false;
       bridge.pendingTTSText = '';
+
+      // Abort the current OpenClaw response
+      interruptResponse(bridge.callSid);
+
       // Clear Twilio audio buffer
       if (bridge.streamSid) {
         bridge.twilioWs.send(JSON.stringify({
@@ -254,7 +254,7 @@ async function processAudioBuffer(bridge: OpenClawBridgeSession): Promise<void> 
       console.log(`[OpenClawBridge] Transcription: "${result.text}"`);
 
       // Send to OpenClaw
-      sendTranscription(bridge.callSid, result.text);
+      await sendTranscription(bridge.callSid, result.text);
     } else {
       // No speech detected, go back to listening
       bridge.state = 'listening';
@@ -266,9 +266,9 @@ async function processAudioBuffer(bridge: OpenClawBridgeSession): Promise<void> 
 }
 
 /**
- * Handle assistant message delta (streaming)
+ * Handle text delta (streaming) from OpenClaw
  */
-function handleAssistantDelta(bridge: OpenClawBridgeSession, delta: string): void {
+function handleTextDelta(bridge: OpenClawBridgeSession, delta: string): void {
   bridge.pendingTTSText += delta;
 
   // Stream TTS when we have enough text (at sentence boundaries)
@@ -281,9 +281,9 @@ function handleAssistantDelta(bridge: OpenClawBridgeSession, delta: string): voi
 }
 
 /**
- * Handle assistant message complete
+ * Handle text complete from OpenClaw
  */
-function handleAssistantComplete(bridge: OpenClawBridgeSession, content: string): void {
+function handleTextComplete(bridge: OpenClawBridgeSession, content: string): void {
   // Speak any remaining text
   if (bridge.pendingTTSText.trim()) {
     const textToSpeak = bridge.pendingTTSText;
@@ -350,173 +350,10 @@ async function streamTTS(bridge: OpenClawBridgeSession, text: string): Promise<v
 }
 
 /**
- * Handle tool calls from OpenClaw
- */
-async function handleToolCall(
-  bridge: OpenClawBridgeSession,
-  toolCallId: string,
-  name: string,
-  args: Record<string, unknown>
-): Promise<void> {
-  console.log(`[OpenClawBridge] Tool call: ${name}(${JSON.stringify(args)})`);
-
-  let result: unknown;
-
-  try {
-    switch (name) {
-      case 'get_vehicle_status': {
-        const vehicleName = (args.vehicle as string) || '';
-        let vehicle = vehicleName;
-        const driver = findDriverByName(vehicleName);
-        if (driver) {
-          vehicle = driver.vehicle;
-        }
-
-        const status = await getVehicleStatus(vehicle);
-        if (status) {
-          let stoppedMinutes: number | undefined;
-          if (status.currentStateDuration && !status.isDriving) {
-            const match = status.currentStateDuration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-            if (match) {
-              stoppedMinutes =
-                (parseInt(match[1] || '0') * 60) + parseInt(match[2] || '0') + parseInt(match[3] || '0') / 60;
-            }
-          }
-
-          contextStore.setVehicleStatus({
-            vehicle: status.name,
-            speed: status.speed || 0,
-            stoppedMinutes: stoppedMinutes ? Math.round(stoppedMinutes) : undefined,
-            location: `${status.latitude}, ${status.longitude}`,
-            isDriving: status.isDriving,
-          });
-
-          result = {
-            vehicle: status.name,
-            status: status.isDriving ? 'driving' : 'stopped',
-            speed: `${status.speed || 0} mph`,
-            stopped_for: stoppedMinutes ? `${Math.round(stoppedMinutes)} minutes` : undefined,
-            location: status.latitude && status.longitude
-              ? `${status.latitude.toFixed(4)}, ${status.longitude.toFixed(4)}`
-              : 'Unknown',
-            communicating: status.isDeviceCommunicating,
-          };
-        } else {
-          result = { error: `Vehicle "${vehicleName}" not found` };
-        }
-        break;
-      }
-
-      case 'get_fleet_overview': {
-        const overview = await getFleetOverview();
-        result = {
-          total_vehicles: overview.total,
-          driving: overview.driving,
-          stopped: overview.stopped,
-          offline: overview.offline,
-          vehicles: overview.vehicles.slice(0, 10).map((v) => ({
-            name: v.name,
-            status: v.status,
-            speed: v.speed !== null ? `${v.speed} mph` : 'N/A',
-          })),
-        };
-        break;
-      }
-
-      case 'initiate_call': {
-        const target = (args.target as string) || '';
-        const reason = (args.reason as string) || '';
-        const context = (args.context as string) || '';
-
-        let phone: string;
-
-        if (target.toLowerCase() === 'boss') {
-          phone = bossPhone;
-        } else {
-          const driver = findDriverByName(target);
-          if (driver) {
-            phone = driver.phone;
-          } else {
-            result = { error: `Driver "${target}" not found` };
-            break;
-          }
-        }
-
-        orchestrator.scheduleOutbound(target, phone, reason, context);
-
-        result = {
-          status: 'scheduled',
-          message: `Will call ${target} after this call ends`,
-          target,
-          reason,
-        };
-        break;
-      }
-
-      case 'end_current_call': {
-        const summary = (args.summary as string) || '';
-        orchestrator.endCall(bridge.callSid, summary);
-
-        if (bridge.streamSid) {
-          bridge.twilioWs.send(JSON.stringify({
-            event: 'clear',
-            streamSid: bridge.streamSid,
-          }));
-        }
-
-        result = { status: 'ending', summary };
-        break;
-      }
-
-      case 'save_context': {
-        if (args.boss_asked_about || args.vehicle || args.deadline) {
-          contextStore.setBossQuery({
-            askedAbout: args.boss_asked_about as string,
-            vehicle: args.vehicle as string,
-            deadline: args.deadline as string,
-          });
-        }
-        if (args.driver_said || args.driver_commitment) {
-          contextStore.setDriverResponse({
-            said: args.driver_said as string,
-            commitment: args.driver_commitment as string,
-          });
-        }
-        if (args.diplomatic_response) {
-          contextStore.setDiplomaticResponse({
-            forBoss: args.diplomatic_response as string,
-          });
-        }
-        result = { status: 'saved' };
-        break;
-      }
-
-      default:
-        result = { error: `Unknown function: ${name}` };
-    }
-  } catch (err) {
-    console.error(`[OpenClawBridge] Error in tool ${name}:`, err);
-    result = { error: String(err) };
-  }
-
-  // Send result back to OpenClaw
-  sendToolResult(bridge.callSid, toolCallId, result);
-}
-
-/**
  * Clean up bridge session
  */
 function cleanup(bridge: OpenClawBridgeSession): void {
   closeOpenClawSession(bridge.callSid);
   orchestrator.endCall(bridge.callSid);
   bridgeSessions.delete(bridge.callSid);
-
-  // Check for pending outbound calls
-  const pending = orchestrator.consumePendingOutbound();
-  if (pending) {
-    console.log(`[OpenClawBridge] Initiating pending outbound call to ${pending.target}`);
-    initiateOutboundCall(pending.phone, pending.target, pending.reason).catch((err) => {
-      console.error('[OpenClawBridge] Failed to initiate outbound call:', err);
-    });
-  }
 }

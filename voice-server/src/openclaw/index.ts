@@ -12,7 +12,6 @@ export {
   getOpenClawSession,
   closeOpenClawSession,
   sendTranscription,
-  sendToolResult,
   triggerGreeting,
   interruptResponse,
 } from './session';

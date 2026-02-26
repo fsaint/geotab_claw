@@ -1,155 +1,217 @@
 /**
  * OpenClaw Gateway Protocol Types
  *
- * Message types for communicating with the OpenClaw WebSocket Gateway.
+ * Matches the actual OpenClaw WebSocket Gateway protocol.
+ * See: openclaw/src/gateway/protocol/schema/
  */
 
-// === Connection & Session Messages ===
+// === Protocol Version ===
+export const PROTOCOL_VERSION = 1;
 
-export interface OpenClawHandshake {
-  type: 'handshake';
-  token?: string;
-  clientId: string;
-  version: string;
+// === Frame Types ===
+
+export interface RequestFrame {
+  type: 'req';
+  id: string;
+  method: string;
+  params?: unknown;
 }
 
-export interface OpenClawHandshakeAck {
-  type: 'handshake.ack';
-  sessionId: string;
-  status: 'connected';
+export interface ResponseFrame {
+  type: 'res';
+  id: string;
+  ok: boolean;
+  payload?: unknown;
+  error?: ErrorShape;
 }
 
-export interface OpenClawSessionCreate {
-  type: 'session.create';
-  sessionId: string;
-  systemPrompt?: string;
-  tools?: OpenClawTool[];
+export interface EventFrame {
+  type: 'event';
+  event: string;
+  payload?: unknown;
+  seq?: number;
 }
 
-export interface OpenClawSessionCreated {
-  type: 'session.created';
-  sessionId: string;
-  conversationId: string;
-}
-
-export interface OpenClawSessionEnd {
-  type: 'session.end';
-  sessionId: string;
-}
-
-// === Message Types ===
-
-export interface OpenClawUserMessage {
-  type: 'message.user';
-  sessionId: string;
-  content: string;
-  messageId?: string;
-}
-
-export interface OpenClawAssistantMessage {
-  type: 'message.assistant';
-  sessionId: string;
-  content: string;
-  messageId: string;
-  isComplete: boolean;
-}
-
-export interface OpenClawAssistantDelta {
-  type: 'message.assistant.delta';
-  sessionId: string;
-  delta: string;
-  messageId: string;
-}
-
-export interface OpenClawMessageComplete {
-  type: 'message.complete';
-  sessionId: string;
-  messageId: string;
-  content: string;
-}
-
-// === Tool Calls ===
-
-export interface OpenClawTool {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-}
-
-export interface OpenClawToolCall {
-  type: 'tool.call';
-  sessionId: string;
-  toolCallId: string;
-  name: string;
-  arguments: Record<string, unknown>;
-}
-
-export interface OpenClawToolResult {
-  type: 'tool.result';
-  sessionId: string;
-  toolCallId: string;
-  result: unknown;
-  isError?: boolean;
-}
-
-// === Error & Control ===
-
-export interface OpenClawError {
-  type: 'error';
-  sessionId?: string;
+export interface ErrorShape {
   code: string;
   message: string;
+  details?: unknown;
+  retryable?: boolean;
+  retryAfterMs?: number;
 }
 
-export interface OpenClawPing {
-  type: 'ping';
+export type GatewayFrame = RequestFrame | ResponseFrame | EventFrame;
+
+// === Connect ===
+
+export interface ConnectParams {
+  minProtocol: number;
+  maxProtocol: number;
+  client: {
+    id: string;
+    displayName?: string;
+    version: string;
+    platform: string;
+    mode: 'backend' | 'operator' | 'probe';
+    instanceId?: string;
+  };
+  caps?: string[];
+  commands?: string[];
+  permissions?: Record<string, boolean>;
+  role?: string;
+  scopes?: string[];
+  auth?: {
+    token?: string;
+    password?: string;
+  };
 }
 
-export interface OpenClawPong {
-  type: 'pong';
+export interface HelloOk {
+  type: 'hello-ok';
+  protocol: number;
+  server: {
+    version: string;
+    commit?: string;
+    host?: string;
+    connId: string;
+  };
+  features: {
+    methods: string[];
+    events: string[];
+  };
+  snapshot: Snapshot;
+  auth?: {
+    deviceToken: string;
+    role: string;
+    scopes: string[];
+  };
+  policy: {
+    maxPayload: number;
+    maxBufferedBytes: number;
+    tickIntervalMs: number;
+  };
 }
 
-// === Union Types ===
-
-export type OpenClawClientMessage =
-  | OpenClawHandshake
-  | OpenClawSessionCreate
-  | OpenClawSessionEnd
-  | OpenClawUserMessage
-  | OpenClawToolResult
-  | OpenClawPing;
-
-export type OpenClawServerMessage =
-  | OpenClawHandshakeAck
-  | OpenClawSessionCreated
-  | OpenClawAssistantMessage
-  | OpenClawAssistantDelta
-  | OpenClawMessageComplete
-  | OpenClawToolCall
-  | OpenClawError
-  | OpenClawPong;
-
-// === Event Handlers ===
-
-export type OpenClawEventType =
-  | 'connected'
-  | 'disconnected'
-  | 'session.created'
-  | 'message.delta'
-  | 'message.complete'
-  | 'tool.call'
-  | 'error';
-
-export interface OpenClawEventMap {
-  connected: { sessionId: string };
-  disconnected: { reason?: string };
-  'session.created': { sessionId: string; conversationId: string };
-  'message.delta': { delta: string; messageId: string };
-  'message.complete': { content: string; messageId: string };
-  'tool.call': { toolCallId: string; name: string; arguments: Record<string, unknown> };
-  error: { code: string; message: string };
+export interface Snapshot {
+  sessions?: SessionSummary[];
+  agents?: AgentSummary[];
+  // ... other snapshot fields
 }
 
-export type OpenClawEventHandler<T extends OpenClawEventType> = (
-  event: OpenClawEventMap[T]
-) => void;
+export interface SessionSummary {
+  key: string;
+  agent?: string;
+  title?: string;
+  updatedAt?: number;
+}
+
+export interface AgentSummary {
+  id: string;
+  name?: string;
+}
+
+// === Chat ===
+
+export interface ChatSendParams {
+  sessionKey: string;
+  message: string;
+  thinking?: string;
+  deliver?: boolean;
+  attachments?: unknown[];
+  timeoutMs?: number;
+  idempotencyKey: string;
+}
+
+export interface ChatAbortParams {
+  sessionKey: string;
+  runId?: string;
+}
+
+export interface ChatInjectParams {
+  sessionKey: string;
+  message: string;
+  label?: string;
+}
+
+export interface ChatEvent {
+  runId: string;
+  sessionKey: string;
+  seq: number;
+  state: 'delta' | 'final' | 'aborted' | 'error';
+  message?: ChatMessage;
+  errorMessage?: string;
+  usage?: unknown;
+  stopReason?: string;
+}
+
+export interface ChatMessage {
+  role?: 'user' | 'assistant';
+  content?: ContentBlock[];
+  // For deltas, may just have text
+  text?: string;
+}
+
+export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
+
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ToolResultBlock {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+}
+
+// === Sessions ===
+
+export interface SessionsListParams {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface SessionsResolveParams {
+  sessionKey: string;
+}
+
+export interface SessionsPatchParams {
+  sessionKey: string;
+  systemPrompt?: string;
+  title?: string;
+}
+
+// === Agents ===
+
+export interface AgentsListParams {
+  // empty
+}
+
+// === Tick Event ===
+
+export interface TickEvent {
+  ts: number;
+}
+
+// === Helper Types ===
+
+export type PendingRequest = {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+  method: string;
+};
+
+export interface GatewayClientEvents {
+  connected: HelloOk;
+  disconnected: { code: number; reason: string };
+  chat: ChatEvent;
+  tick: TickEvent;
+  error: ErrorShape;
+}
