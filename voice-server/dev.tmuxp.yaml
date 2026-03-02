@@ -12,3 +12,7 @@ windows:
           - sleep 3  # Wait for gateway to start
           - USE_OPENCLAW=true npm run dev
         focus: true
+      - shell_command:
+          - cd /Users/fsaint/git/geotab_claw
+          - npm run dev
+        focus: false
